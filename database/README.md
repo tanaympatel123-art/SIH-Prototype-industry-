@@ -1,8 +1,24 @@
-# SIH26044 — Database Foundation (Phase 1)
+# SIH26044 — Database Foundation (Phase 1 & 2)
 **Project:** Academia–Industry Collaboration Portal  
 **Role:** M3 – Database Manager  
 **Database Technology:** MySQL 8.x / MariaDB (XAMPP & phpMyAdmin compatible)  
 **Storage Engine:** InnoDB | **Encoding:** `utf8mb4` | **Collation:** `utf8mb4_unicode_ci`  
+
+---
+
+## Phase 2 Stats
+
+| Metric | Phase 1 | Phase 2 (Added) | Total |
+|--------|---------|-----------------|-------|
+| Students | 3 | 30 | 33 |
+| Companies | 2 | 5 | 7 |
+| Teachers | 2 | 3 | 5 |
+| Opportunities | 2 | 15 | 17 |
+| Skills | 15 | 15 | 30 |
+| Applications | 5 | 45 | 50 |
+| Stored Procedures | 0 | 2 | 2 |
+| Compound Indexes | 0 | 5 | 5 |
+| New Tables | 0 | 1 (`application_status_history`) | 12 |
 
 ---
 
@@ -23,12 +39,18 @@ database/
 │   ├── 09_opportunity_skills.sql       # Opportunity skill requirements junction
 │   ├── 10_applications.sql             # Student application submissions & ATS pipeline
 │   └── all_in_one_phase1.sql           # Complete all-in-one schema runner (for 1-click import)
+├── migrations/
+│   ├── 001-013_*.sql                   # Legacy PostgreSQL prototypes (archival reference only)
+│   ├── 014_phase2_stored_procedures.sql# Phase 2: sp_approve_skill_verification, sp_update_application_status
+│   └── 015_phase2_indexes.sql          # Phase 2: 5 compound/covering indexes for MatchScore Engine
 ├── seeds/
-│   └── phase1_seed.sql                 # Realistic demonstration seed dataset
+│   ├── phase1_seed.sql                 # Phase 1: 3 students, 2 companies, 14 skills
+│   └── phase2_expanded_seed.sql        # Phase 2: 30 students, 5 companies, 15 opps, 45 applications
 ├── queries/
-│   └── phase1_test_queries.sql         # Functional verification & analytics queries
-├── docs/
-│   └── er_diagram.md                   # Mermaid ER diagram & relational architecture
+│   ├── phase1_test_queries.sql         # Phase 1: Functional verification & analytics queries (8 queries)
+│   └── phase2_benchmark_queries.sql    # Phase 2: EXPLAIN ANALYZE proofs for 4 query patterns
+├── run_phase1_mysql.sql                # Phase 1: 1-click runner
+├── run_phase2_mysql.sql                # Phase 2: 1-click runner
 └── backups/                            # Reserved for mysqldump exports (.sql)
 ```
 
@@ -154,3 +176,77 @@ C:\xampp\mysql\bin\mysql.exe -u root < database\queries\phase1_test_queries.sql
   3. *Data Analyst Intern* (Innovate AI Systems, Onsite, ₹30k/mo)
 - **Recruitment Applications:** 5 candidate applications across multiple recruitment stages (`applied`, `shortlisted`, `interview`, `selected`).
 - **Teacher Endorsements:** Real audit entries illustrating `approved`, `pending`, and `rejected` statuses with teacher remarks and evidence links.
+
+---
+
+## 7. Phase 2 — Deployment Instructions
+
+### Option A: 1-Click Runner (phpMyAdmin)
+1. Ensure Phase 1 is already loaded (`all_in_one_phase1.sql` + `phase1_seed.sql`).
+2. In phpMyAdmin, open the **SQL tab**.
+3. Import `database/migrations/014_phase2_stored_procedures.sql`
+4. Import `database/migrations/015_phase2_indexes.sql`
+5. Import `database/seeds/phase2_expanded_seed.sql`
+6. Import `database/queries/phase2_benchmark_queries.sql` to verify EXPLAIN output.
+
+### Option B: MySQL CLI (recommended for full runner)
+```powershell
+# From project root — run after Phase 1 is loaded
+C:\xampp\mysql\bin\mysql.exe -u root sih26044_db `
+    < database/migrations/014_phase2_stored_procedures.sql
+
+C:\xampp\mysql\bin\mysql.exe -u root sih26044_db `
+    < database/migrations/015_phase2_indexes.sql
+
+C:\xampp\mysql\bin\mysql.exe -u root sih26044_db `
+    < database/seeds/phase2_expanded_seed.sql
+
+C:\xampp\mysql\bin\mysql.exe -u root sih26044_db `
+    < database/queries/phase2_benchmark_queries.sql
+```
+
+---
+
+## 8. Using Stored Procedures
+
+### `sp_approve_skill_verification` — Teacher approves a skill claim
+```sql
+-- Approve verification ID 1 by Teacher 1 (Dr. Rajesh Verma)
+CALL sp_approve_skill_verification(1, 1, 'Excellent project submission. Verified.');
+-- Returns: result_status, verification_id, student_id, skill_now_verified, updated_completion_pct
+```
+
+### `sp_update_application_status` — Move an application through the pipeline
+```sql
+-- Shortlist application ID 1 (recruiter user_id = 5)
+CALL sp_update_application_status(1, 'shortlisted', 'Strong Python profile.', 5);
+
+-- Schedule interview
+CALL sp_update_application_status(1, 'interview', 'Technical round booked for 2025-08-10.', 5);
+
+-- Final selection
+CALL sp_update_application_status(1, 'selected', 'Offer extended.', 5);
+
+-- Attempting invalid transition (selected → applied) will SIGNAL an error:
+-- ERROR 1644: ERROR: Application is in a terminal state. No further transitions allowed.
+```
+
+**Valid State Transitions:**
+```
+applied  →  shortlisted | rejected | withdrawn
+shortlisted  →  interview | rejected | withdrawn
+interview  →  selected | rejected | withdrawn
+selected / rejected / withdrawn  →  (TERMINAL — no further transitions)
+```
+
+---
+
+## 9. Phase 2 Compound Indexes Summary
+
+| Index Name | Table | Columns | Purpose |
+|---|---|---|---|
+| `idx_ss_student_verified_proficiency` | `student_skills` | `(student_id, is_verified, proficiency_level, skill_id)` | MatchScore: verified skills per student |
+| `idx_os_opportunity_mandatory_skill` | `opportunity_skills` | `(opportunity_id, is_mandatory, skill_id, required_proficiency_level)` | MatchScore: mandatory skills per opportunity |
+| `idx_app_opportunity_status_student` | `applications` | `(opportunity_id, application_status, student_id)` | Recruiter ATS pipeline sorted by stage |
+| `idx_sv_teacher_status_skill` | `skill_verifications` | `(verifier_teacher_id, verification_status, student_skill_id)` | Teacher pending workqueue |
+| `idx_opp_status_deadline_company` | `opportunities` | `(status, application_deadline, company_id)` | Student job board deadline-sorted discovery |
